@@ -1,8 +1,8 @@
 /*
- * Node.js Express with in-process job queue + worker model
- * Ensures immediate response on POST /analyze to avoid Railway 502
- * POST /analyze  --> { jobId }
- * GET  /result/:jobId --> { status, result?, error? }
+ * GTM Analyzer with in-process job queue + worker model
+ * - GET  /            → 'OK' (health check)
+ * - POST /analyze     → { jobId } (immediate)
+ * - GET  /result/:id  → { status, result?, error? }
  */
 
 const express = require('express');
@@ -15,47 +15,42 @@ const { v4: uuidv4 } = require('uuid');
 const app = express();
 app.use(express.json({ limit: '10kb' }));
 
-// In-memory job store & queue
-const jobs  = new Map();    // jobId -> { status, result?, error? }
+// In-memory job storage & queue
+const jobs = new Map();
 const queue = [];
 let isProcessing = false;
 const limit = pLimit(1);
 
-// Health check
-app.get('/', (_req, res) => res.send('OK'));
+// 1) HEALTH CHECK (must be FIRST)
+app.get('/', (_req, res) => {
+  res.send('OK');
+});
 
-// Enqueue analysis job with immediate response
+// 2) ENQUEUE ANALYSE
 app.post('/analyze', (req, res) => {
   const { url } = req.body;
-  if (!url) {
-    return res.status(400).json({ error: 'URL is required' });
-  }
-  try {
-    new URL(url);
-  } catch {
-    return res.status(400).json({ error: 'Invalid URL' });
-  }
+  if (!url) return res.status(400).json({ error: 'URL is required' });
+  try { new URL(url); } catch { return res.status(400).json({ error: 'Invalid URL' }); }
 
-  // Generate jobId and respond immediately
   const jobId = uuidv4();
   jobs.set(jobId, { status: 'pending' });
   res.json({ jobId });
 
-  // Schedule job processing after response is flushed
+  // schedule work after response is flushed
   setImmediate(() => {
     queue.push({ jobId, url });
     processQueue();
   });
 });
 
-// Fetch job result or status
+// 3) FETCH RESULT
 app.get('/result/:id', (req, res) => {
   const job = jobs.get(req.params.id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
   res.json(job);
 });
 
-// Worker: process queue one at a time
+// 4) WORKER: process one job at a time
 async function processQueue() {
   if (isProcessing || queue.length === 0) return;
   isProcessing = true;
@@ -66,7 +61,7 @@ async function processQueue() {
       const result = await limit(() => analyzeGTM(url));
       jobs.set(jobId, { status: 'done', result });
     } catch (err) {
-      console.error(`Error in job ${jobId}:`, err);
+      console.error(`Job ${jobId} failed:`, err);
       jobs.set(jobId, { status: 'error', error: err.message });
     }
   }
@@ -74,63 +69,47 @@ async function processQueue() {
   isProcessing = false;
 }
 
-// GTM analysis using axios + cheerio
+// 5) GTM detection using axios + cheerio
 async function analyzeGTM(url) {
-  const response = await axios.get(url, {
+  const { data: html } = await axios.get(url, {
     timeout: 7000,
     headers: {
       'User-Agent': 'Mozilla/5.0 (Node.js)',
-      'Accept-Language': 'en-US,en;q=0.9',
       'Accept': 'text/html'
     }
   });
+  const $ = cheerio.load(html);
+  const host       = new URL(url).hostname;
+  const mainDomain = psl.get(host) || host;
 
-  const html = response.data;
-  const $    = cheerio.load(html);
-  const hostname   = new URL(url).hostname;
-  const mainDomain = psl.get(hostname) || hostname;
-
-  let isGTMFound  = false;
-  let isProxified = false;
-  let gtmDomain   = '';
+  let isGTMFound = false, isProxified = false, gtmDomain = '';
 
   $('script').each((_, el) => {
     if (isGTMFound) return;
-    const src    = $(el).attr('src')  || '';
-    const inline = $(el).html()      || '';
-
+    const src = $(el).attr('src')||'';
+    const inl = $(el).html()||'';
     if (src.includes('?id=GTM-')) {
       isGTMFound = true;
-      const full  = src.startsWith('//') ? 'https:' + src : src;
+      const full = src.startsWith('//') ? 'https:'+src : src;
       try {
-        const host = new URL(full).hostname;
-        gtmDomain = host;
-        if (!host.includes('google') && host.endsWith(mainDomain)) {
-          isProxified = true;
-        }
-      } catch {}
-      return;
-    }
-
-    const inlineMatch = inline.match(/GTM-[A-Z0-9]+/);
-    if (inlineMatch) {
+        const d = new URL(full).hostname;
+        gtmDomain = d;
+        if (!d.includes('google') && d.endsWith(mainDomain)) isProxified = true;
+      } catch{}
+    } else if (/GTM-[A-Z0-9]+/.test(inl)) {
       isGTMFound = true;
-      if (new RegExp(`\\b${mainDomain.replace('.', '\\.')}`, 'i').test(inline)) {
-        isProxified = true;
-        gtmDomain = hostname;
+      if (new RegExp(`\\b${mainDomain.replace('.', '\\.')}`, 'i').test(inl)) {
+        isProxified = true; gtmDomain = host;
       }
     }
   });
 
   if (!isGTMFound) {
     $('script').each((_, el) => {
-      const content = ($(el).attr('src') || '') + ($(el).html() || '');
-      if (content.includes('?aw=')) {
+      const txt = ($(el).attr('src')||'')+($(el).html()||'');
+      if (txt.includes('?aw=')) {
         isGTMFound = true;
-        if (content.includes(mainDomain)) {
-          isProxified = true;
-          gtmDomain = hostname;
-        }
+        if (txt.includes(mainDomain)) { isProxified = true; gtmDomain = host; }
         return false;
       }
     });
@@ -139,7 +118,7 @@ async function analyzeGTM(url) {
   return { url, gtmDomain, isProxified, isGTMFound };
 }
 
-// Start server
+// START SERVER
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server listening on port ${PORT}`);
