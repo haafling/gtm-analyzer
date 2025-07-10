@@ -8,6 +8,12 @@ const cheerio = require('cheerio');
 const pLimit = require('p-limit');
 const psl = require('psl');
 
+// DEBUG: log de toutes les requêtes entrantes
+app.use((req, res, next) => {
+  console.log(`→ ${req.method} ${req.originalUrl}`);
+  next();
+});
+
 const app = express();
 app.use(express.json({ limit: '10kb' }));
 const limit = pLimit(1);
