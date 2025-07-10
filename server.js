@@ -16,7 +16,7 @@ const app = express();
 app.use(express.json({ limit: '10kb' }));
 
 // In-memory job store & queue
-const jobs  = new Map();               // jobId -> { status, result?, error? }
+const jobs  = new Map();    // jobId -> { status, result?, error? }
 const queue = [];
 let isProcessing = false;
 const limit = pLimit(1);
@@ -41,8 +41,8 @@ app.post('/analyze', (req, res) => {
   jobs.set(jobId, { status: 'pending' });
   res.json({ jobId });
 
-  // Schedule job processing in next tick to avoid blocking response
-  process.nextTick(() => {
+  // Schedule job processing after response is flushed
+  setImmediate(() => {
     queue.push({ jobId, url });
     processQueue();
   });
@@ -90,9 +90,9 @@ async function analyzeGTM(url) {
   const hostname   = new URL(url).hostname;
   const mainDomain = psl.get(hostname) || hostname;
 
-  let isGTMFound = false;
+  let isGTMFound  = false;
   let isProxified = false;
-  let gtmDomain = '';
+  let gtmDomain   = '';
 
   $('script').each((_, el) => {
     if (isGTMFound) return;
