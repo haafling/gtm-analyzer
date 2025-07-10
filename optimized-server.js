@@ -1,22 +1,26 @@
-/*
- * Serveur Express optimisé pour détecter un snippet GTM sans Puppeteer
- */
-
 const express = require('express');
-const axios = require('axios');
+const axios   = require('axios');
 const cheerio = require('cheerio');
-const pLimit = require('p-limit');
-const psl = require('psl');
+const pLimit  = require('p-limit');
+const psl     = require('psl');
 
-// DEBUG: log de toutes les requêtes entrantes
+const app = express();
+
+// DEBUG : log de toutes les requêtes entrantes
 app.use((req, res, next) => {
   console.log(`→ ${req.method} ${req.originalUrl}`);
   next();
 });
 
-const app = express();
 app.use(express.json({ limit: '10kb' }));
 const limit = pLimit(1);
+
+// Déclaration de la route POST /analyze
+app.post('/analyze', async (req, res) => {
+  const { url } = req.body;
+  console.log('Analyzing:', url);
+  // … le reste de ta logique d’analyse
+});
 
 function validateUrl(req, res, next) {
   const { url } = req.body;
