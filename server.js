@@ -1,7 +1,8 @@
 /*
  * Node.js Express with in-process job queue + worker model
+ * Ensures immediate response on POST /analyze to avoid Railway 502
  * POST /analyze  --> { jobId }
- * GET  /result/:jobId --> { status, result? }
+ * GET  /result/:jobId --> { status, result?, error? }
  */
 
 const express = require('express');
@@ -23,7 +24,7 @@ const limit = pLimit(1);
 // Health check
 app.get('/', (_req, res) => res.send('OK'));
 
-// Enqueue analysis job
+// Enqueue analysis job with immediate response
 app.post('/analyze', (req, res) => {
   const { url } = req.body;
   if (!url) {
@@ -35,12 +36,16 @@ app.post('/analyze', (req, res) => {
     return res.status(400).json({ error: 'Invalid URL' });
   }
 
+  // Generate jobId and respond immediately
   const jobId = uuidv4();
   jobs.set(jobId, { status: 'pending' });
-  queue.push({ jobId, url });
-  processQueue();
-
   res.json({ jobId });
+
+  // Schedule job processing in next tick to avoid blocking response
+  process.nextTick(() => {
+    queue.push({ jobId, url });
+    processQueue();
+  });
 });
 
 // Fetch job result or status
@@ -110,7 +115,7 @@ async function analyzeGTM(url) {
     const inlineMatch = inline.match(/GTM-[A-Z0-9]+/);
     if (inlineMatch) {
       isGTMFound = true;
-      if (new RegExp(`\b${mainDomain.replace('.', '\.')}`, 'i').test(inline)) {
+      if (new RegExp(`\\b${mainDomain.replace('.', '\\.')}`, 'i').test(inline)) {
         isProxified = true;
         gtmDomain = hostname;
       }
@@ -134,6 +139,7 @@ async function analyzeGTM(url) {
   return { url, gtmDomain, isProxified, isGTMFound };
 }
 
+// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server listening on port ${PORT}`);
